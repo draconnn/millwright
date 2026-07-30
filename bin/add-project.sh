@@ -51,6 +51,18 @@ echo "staged: $project (label '$label')"
 echo "  plist: $plist"
 echo "  registered in $infra/projects.conf (menu bar shows it within 30s)"
 echo ""
-echo "Remaining manual steps:"
-echo "  1. Pause/disable the project's Codex app automations (never run both)."
-echo "  2. cp \"$plist\" ~/Library/LaunchAgents/ && launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/com.dracon.$project.pipeline.plist"
+echo "The daemon must never run alongside the project's Codex app automations."
+printf "Have you paused/disabled them for %s? [y/N] " "$project"
+read -r answer
+case $answer in
+  y|Y|yes|YES)
+    cp "$plist" ~/Library/LaunchAgents/
+    launchctl bootstrap "gui/$(id -u)" \
+      ~/Library/LaunchAgents/"com.dracon.$project.pipeline.plist"
+    echo "daemon loaded — the menu bar glyph should go 🟢 or 🌙 within 30s."
+    ;;
+  *)
+    echo "Not loading. When the automations are paused, run:"
+    echo "  cp \"$plist\" ~/Library/LaunchAgents/ && launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/com.dracon.$project.pipeline.plist"
+    ;;
+esac
