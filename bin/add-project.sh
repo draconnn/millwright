@@ -37,9 +37,8 @@ fi
 [ "$fail" = 0 ] || { echo "not staged — fix the items above first." >&2; exit 1; }
 
 plist="$infra/launchd/com.dracon.$project.pipeline.plist"
-sed -e "s|/Users/dracon/projects/worldwright|$root|g" \
-    -e "s|com.dracon.worldwright.pipeline|com.dracon.$project.pipeline|g" \
-  "$infra/launchd/com.dracon.worldwright.pipeline.plist" > "$plist"
+sed -e "s|@@ROOT@@|$root|g" -e "s|@@PROJECT@@|$project|g" \
+  "$infra/launchd/template.plist" > "$plist"
 plutil -lint "$plist" >/dev/null
 
 if ! grep -q "^$root " "$infra/projects.conf" 2>/dev/null \

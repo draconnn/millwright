@@ -4,15 +4,15 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.dracon.worldwright.pipeline</string>
+  <string>com.dracon.@@PROJECT@@.pipeline</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string>
     <string>/Users/dracon/.ww-pipeline/bin/pipeline.sh</string>
-    <string>/Users/dracon/projects/worldwright</string>
+    <string>@@ROOT@@</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/dracon/projects/worldwright</string>
+  <string>@@ROOT@@</string>
   <key>KeepAlive</key>
   <true/>
   <key>RunAtLoad</key>
@@ -25,8 +25,8 @@
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>StandardOutPath</key>
-  <string>/Users/dracon/projects/worldwright/logs/pipeline/launchd.out</string>
+  <string>@@ROOT@@/logs/pipeline/launchd.out</string>
   <key>StandardErrorPath</key>
-  <string>/Users/dracon/projects/worldwright/logs/pipeline/launchd.err</string>
+  <string>@@ROOT@@/logs/pipeline/launchd.err</string>
 </dict>
 </plist>
