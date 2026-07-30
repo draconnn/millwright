@@ -134,7 +134,7 @@ run_phase() { # $1 = phase name; remaining args passed to `codex exec`
   # log — appending them once grew a day log to 7.5MB and froze editors.
   mkdir -p "$PIPE_DIR/sessions"
   out="$PIPE_DIR/sessions/$(date -u +%Y%m%dT%H%M%SZ)-$phase.out"
-  "$CODEX" exec "$@" > "$out.raw" 2>&1
+  "$CODEX" exec -o "$out.last" "$@" > "$out.raw" 2>&1
   rc=$?
   kill "$hb" 2>/dev/null
   wait "$hb" 2>/dev/null || true
@@ -171,6 +171,11 @@ run_phase() { # $1 = phase name; remaining args passed to `codex exec`
   else
     log "$phase: FAILED rc=$rc after $dur_h  session ${sid:-unknown}  capture sessions/$(basename "$out")"
   fi
+  # The model's closing message, indented under the done/FAILED line.
+  if [ -s "$out.last" ]; then
+    head -40 "$out.last" | sed 's/^/          | /' >> "$(logfile)"
+  fi
+  rm -f "$out.last"
   # keep only the newest 40 capture files
   ls -t "$PIPE_DIR/sessions" 2>/dev/null | tail -n +41 | while read -r f; do
     rm -f "$PIPE_DIR/sessions/$f"
