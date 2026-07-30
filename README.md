@@ -38,12 +38,21 @@ each repo's `logs/pipeline/`. Origin: the Worldwright unified-pipeline spec
 
 ## Add a project
 
+Run `bin/add-project.sh <repo-root> [bar-label]`. It verifies the repo
+qualifies (guard, lease scripts, plans dir, notes file, `logs/` gitignored),
+generates the plist into `launchd/`, and registers the project in
+`projects.conf` (the menu bar picks it up within 30 s as ⚪). Then two
+manual steps, in this order:
+
 1. Pause/disable the project's Codex app automations — the daemon must
    never run alongside them (the worker lease serializes collisions, but
    every collision wastes a session).
-2. Add the repo root to `projects.conf`.
-3. Copy its plist from `launchd/` to `~/Library/LaunchAgents/` and
+2. Copy the generated plist to `~/Library/LaunchAgents/` and
    `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<plist>`.
+
+`projects.conf` format: one `<repo-root> [bar-label]` per line; the label
+appears next to the project's glyph in the menu bar (default: first two
+letters of the repo name).
 
 ## Operate
 
