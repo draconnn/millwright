@@ -84,7 +84,9 @@ test_dry_run_active_cycle() {
 }
 
 test_fails_closed_on_garbled_guard() {
-  make_fixture garbled "fatal: something went wrong entirely" "$done_plan"
+  # Open plan on purpose: a garbled guard must stand down the WHOLE cycle,
+  # worker included — a done_plan fixture would mask a worker that still runs.
+  make_fixture garbled "fatal: something went wrong entirely" "$open_plan"
   f="$tmp/garbled/primary"
   out=$(WW_PIPELINE_DRY_RUN=1 daemon "$f")
   case $out in
@@ -93,6 +95,54 @@ test_fails_closed_on_garbled_guard() {
   grep -q 'guard output unrecognized' "$f"/logs/pipeline/*.log || {
     echo "expected stand-down warning in daemon log" >&2; exit 1
   }
+}
+
+test_single_instance_lock() {
+  make_fixture lock "NOTHING TO DO: stub hold. End the orchestrator run now." "$done_plan"
+  f="$tmp/lock/primary"
+  ( cd "$f" && WW_PIPELINE_CODEX=/usr/bin/true WW_PIPELINE_NOTIFY=0 \
+      WW_PIPELINE_IDLE_SLEEP_MIN=1 sh "$infra_root/bin/pipeline.sh" "$f" ) &
+  pid=$(wait_for_daemon_pid "$f/logs/pipeline/status.json") || {
+    echo "daemon never wrote a pid to status.json" >&2; exit 1
+  }
+  set +e
+  out=$(WW_PIPELINE_NOTIFY=0 sh "$infra_root/bin/pipeline.sh" "$f" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" = 75 ] || {
+    echo "expected exit 75 from second instance, got $rc: $out" >&2
+    kill_and_verify_gone "$pid"; exit 1
+  }
+  p2=$(jq -r '.pid' "$f/logs/pipeline/status.json")
+  [ "$p2" = "$pid" ] || {
+    echo "second instance clobbered status.json (pid $p2, expected $pid)" >&2
+    kill_and_verify_gone "$pid"; exit 1
+  }
+  kill_and_verify_gone "$pid"
+}
+
+test_failure_breaker_auto_pauses() {
+  make_fixture breaker "ACTION NEEDED (worker lease: none): - 1 commit(s) stub" "$open_plan"
+  f="$tmp/breaker/primary"
+  ( cd "$f" && WW_PIPELINE_CODEX=/usr/bin/false WW_PIPELINE_NOTIFY=0 \
+      WW_PIPELINE_FAIL_LIMIT=2 WW_PIPELINE_IDLE_SLEEP_MIN=1 \
+      sh "$infra_root/bin/pipeline.sh" "$f" ) &
+  pid=$(wait_for_daemon_pid "$f/logs/pipeline/status.json") || {
+    echo "daemon never wrote a pid to status.json" >&2; exit 1
+  }
+  n=0
+  while ! grep -q 'circuit breaker' "$f"/logs/pipeline/*.log 2>/dev/null; do
+    sleep 1; n=$(( n + 1 ))
+    [ "$n" -lt 30 ] || {
+      echo "breaker never tripped after repeated phase failures" >&2
+      kill_and_verify_gone "$pid"; exit 1
+    }
+  done
+  [ -f "$f/logs/pipeline/PAUSE" ] || {
+    echo "breaker tripped but did not create the PAUSE flag" >&2
+    kill_and_verify_gone "$pid"; exit 1
+  }
+  kill_and_verify_gone "$pid"
 }
 
 wait_for_daemon_pid() { # $1 = status.json path
@@ -145,5 +195,7 @@ test_requires_repo_root
 test_dry_run_idle_cycle
 test_dry_run_active_cycle
 test_fails_closed_on_garbled_guard
+test_single_instance_lock
+test_failure_breaker_auto_pauses
 test_poke_cuts_idle_sleep
 echo "pipeline infra tests ok"

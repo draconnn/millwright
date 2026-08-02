@@ -41,8 +41,9 @@ sed -e "s|@@ROOT@@|$root|g" -e "s|@@PROJECT@@|$project|g" \
   "$infra/launchd/template.plist" > "$plist"
 plutil -lint "$plist" >/dev/null
 
-if ! grep -q "^$root " "$infra/projects.conf" 2>/dev/null \
-   && ! grep -q "^$root\$" "$infra/projects.conf" 2>/dev/null; then
+# Exact first-field match — the path must not be treated as a regex.
+if ! awk -v r="$root" '$1 == r { found = 1 } END { exit found ? 0 : 1 }' \
+    "$infra/projects.conf" 2>/dev/null; then
   printf '%s %s\n' "$root" "$label" >> "$infra/projects.conf"
 fi
 

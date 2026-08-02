@@ -17,7 +17,7 @@ inspect() {
   status="$pipe/status.json"
   glyph="⚪"; state="never run"; pid=0; alive=0; hb_age=999999
   phase_started=""; sleep_until=""; last_cycle="-"; queue=""
-  wsess="-"; osess="-"; last_phase=""; last_exit=""
+  wsess="-"; osess="-"; last_phase=""; last_exit=""; phase_age=-1
   [ -f "$status" ] || return 0
   state=$(jq -r '.state // "unknown"' "$status")
   pid=$(jq -r '.pid // 0' "$status")
@@ -31,13 +31,21 @@ inspect() {
   last_exit=$(jq -r '.last_exit // ""' "$status")
   [ "$pid" -gt 0 ] 2>/dev/null && kill -0 "$pid" 2>/dev/null && alive=1
   [ -f "$pipe/heartbeat" ] && hb_age=$(( $(date +%s) - $(stat -f %m "$pipe/heartbeat") ))
+  if [ -n "$phase_started" ]; then
+    ps_epoch=$(date -ju -f '%Y-%m-%dT%H:%M:%SZ' "$phase_started" +%s 2>/dev/null || echo 0)
+    [ "$ps_epoch" -gt 0 ] && phase_age=$(( $(date +%s) - ps_epoch ))
+  fi
   glyph="🔴"
   case $state in
     paused) glyph="⏸" ;;
     sleeping) [ "$alive" = 1 ] && [ "$hb_age" -lt 300 ] && glyph="🌙" ;;
     starting) [ "$alive" = 1 ] && glyph="🟢" ;;
     worker|orchestrator)
-      [ "$alive" = 1 ] && [ "$hb_age" -lt 300 ] && glyph="🟢" ;;
+      # The daemon's heartbeat stays fresh even when codex exec hangs, so a
+      # phase running past 120 min is flagged as presumed-stalled.
+      if [ "$alive" = 1 ] && [ "$hb_age" -lt 300 ]; then
+        if [ "$phase_age" -gt 7200 ]; then glyph="⏱"; else glyph="🟢"; fi
+      fi ;;
     stopped) glyph="🔴" ;;
   esac
   [ "$alive" = 0 ] && [ "$state" != "stopped" ] && [ "$state" != "never run" ] && glyph="🔴"
@@ -90,7 +98,13 @@ while IFS= read -r line; do
   first=0
   echo "$glyph $name"
   echo "state: $state (pid $pid, alive=$alive)"
-  [ -n "$phase_started" ] && echo "phase since: $phase_started (heartbeat ${hb_age}s ago)"
+  if [ -n "$phase_started" ]; then
+    if [ "$phase_age" -ge 0 ]; then
+      echo "phase since: $phase_started ($(( phase_age / 60 ))m, heartbeat ${hb_age}s ago)"
+    else
+      echo "phase since: $phase_started (heartbeat ${hb_age}s ago)"
+    fi
+  fi
   [ -n "$sleep_until" ] && echo "sleeping until: $sleep_until"
   echo "last cycle: $last_cycle"
   [ -n "$last_phase" ] && echo "last phase: $last_phase"
@@ -107,7 +121,11 @@ while IFS= read -r line; do
     echo "Pause after current phase | shell=/usr/bin/touch param1=$pipe/PAUSE terminal=false refresh=true"
   fi
   echo "Run now (cut idle sleep) | shell=/usr/bin/touch param1=$pipe/POKE terminal=false refresh=true"
-  echo "Open today's log | shell=/usr/bin/open param1=$pipe/$(date -u +%Y%m%d).log terminal=false"
+  # Today's UTC log may not exist yet (first cycle after midnight); fall
+  # back to the newest one so the menu entry always opens something.
+  latest_log="$pipe/$(date -u +%Y%m%d).log"
+  [ -f "$latest_log" ] || latest_log=$(ls -t "$pipe"/[0-9]*.log 2>/dev/null | head -1)
+  [ -n "$latest_log" ] && echo "Open latest log | shell=/usr/bin/open param1=$latest_log terminal=false"
 done <<EOF
 $conf_lines
 EOF

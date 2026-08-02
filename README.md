@@ -8,17 +8,21 @@ each repo's `logs/pipeline/`. Origin: the Worldwright unified-pipeline spec
 ## Layout
 
 - `bin/pipeline.sh <repo-root>` — the daemon. One cycle: guard check →
-  orchestrator `codex exec` session (only on `ACTION NEEDED`; stands down on
-  anything else) → worker session in a fresh detached worktree (only when
-  the earliest plan on origin/main has an unchecked `- [ ]`) → loop on
-  progress, else sleep 30 min. Sessions run `-s danger-full-access`
-  (they must commit and push). Session transcripts land in
-  `<repo>/logs/pipeline/sessions/` clamped to 15-line output blocks,
-  pruned to the newest 40.
+  orchestrator `codex exec` session (only on `ACTION NEEDED`) → worker
+  session in a fresh detached worktree (only when a plan on origin/main has
+  an unchecked `- [ ]`) → loop on progress, else sleep 30 min. An
+  unrecognized guard verdict stands down the whole cycle, worker included.
+  A second instance against the same repo refuses to start (exit 75).
+  After 3 consecutive phase failures (`WW_PIPELINE_FAIL_LIMIT`) the daemon
+  auto-creates `PAUSE` and notifies, instead of retrying forever. Sessions
+  run `-s danger-full-access` (they must commit and push). Session
+  transcripts land in `<repo>/logs/pipeline/sessions/` clamped to 15-line
+  output blocks, pruned to the newest 40; day logs are pruned after 14 days.
 - `bin/statusbar.30s.sh` — SwiftBar plugin; reads `projects.conf`, one
-  menu bar glyph per project (🟢 working / 🌙 sleeping / ⏸ paused /
-  🔴 dead-or-stalled / ⚪ never run) with a dropdown section each
-  (Pause / Run-now, `codex resume` commands, today's log).
+  menu bar glyph per project (🟢 working / ⏱ phase running >120 min,
+  presumed hung / 🌙 sleeping / ⏸ paused / 🔴 dead-or-stalled /
+  ⚪ never run) with a dropdown section each (Pause / Run-now,
+  `codex resume` commands, latest log).
 - `launchd/com.dracon.<project>.pipeline.plist` — one LaunchAgent per
   project (`KeepAlive`; restarts on crash).
 - `tests/test-pipeline.sh` — daemon contract tests against fixture repos

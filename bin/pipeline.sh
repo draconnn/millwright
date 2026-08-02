@@ -3,7 +3,8 @@
 # ~/.ww-pipeline/bin/pipeline.sh). Chains fresh `codex exec` sessions
 # (orchestrator -> worker) in a loop while origin/main advances; sleeps
 # IDLE_SLEEP_MIN minutes after a cycle that moved nothing. Designed to run
-# under launchd with KeepAlive; safe to run manually.
+# under launchd with KeepAlive; safe to run manually — a second instance
+# against the same repo refuses to start (exit 75).
 #
 # Usage: pipeline.sh <repo-root>
 # The repo must follow the shared pipeline conventions: a
@@ -58,6 +59,23 @@ command -v jq >/dev/null 2>&1 || {
 
 mkdir -p "$PIPE_DIR"
 
+# Single-instance lock: if the status file names a live daemon, refuse to
+# start. Runs before the EXIT trap is installed so this refusal can never
+# paint "stopped" over the live daemon's status. Dry runs check their own
+# isolated status file, so a dry run beside a live daemon still works.
+if [ -f "$STATUS" ]; then
+  other_pid=$(jq -r '.pid // 0' "$STATUS" 2>/dev/null || echo 0)
+  other_state=$(jq -r '.state // ""' "$STATUS" 2>/dev/null || echo "")
+  if [ "$other_state" != "stopped" ] && [ "$other_pid" -gt 0 ] 2>/dev/null \
+      && kill -0 "$other_pid" 2>/dev/null; then
+    echo "pipeline.sh: daemon already running for $ROOT (pid $other_pid, state $other_state) — refusing to start" >&2
+    exit 75
+  fi
+fi
+
+# Day logs are tiny but were never pruned; keep two weeks.
+find "$PIPE_DIR" -maxdepth 1 -name '[0-9]*.log' -mtime +14 -delete 2>/dev/null
+
 # File is named by UTC date (the tests depend on that); line timestamps are
 # LOCAL wall-clock time for readability — the operator reads this file.
 logfile() { printf '%s' "$PIPE_DIR/$(date -u +%Y%m%d).log"; }
@@ -80,6 +98,18 @@ LAST_PHASE=""
 QUEUE=""
 LAST_WORKER_SESSION=""
 LAST_ORCH_SESSION=""
+CONSEC_FAILS=0
+FAIL_LIMIT=${WW_PIPELINE_FAIL_LIMIT:-3}
+
+# A persistently failing phase (expired auth, broken skill) otherwise burns
+# a codex session every cycle forever; auto-pause instead of retry-spamming.
+failure_breaker() {
+  [ "$CONSEC_FAILS" -ge "$FAIL_LIMIT" ] || return 0
+  touch "$PAUSE_FLAG"
+  CONSEC_FAILS=0
+  log "circuit breaker: $FAIL_LIMIT consecutive phase failures — auto-paused (Resume in the menu bar or rm PAUSE)"
+  notify "auto-paused after $FAIL_LIMIT consecutive phase failures"
+}
 
 write_status() { # $1 = state
   jq -n \
@@ -229,6 +259,11 @@ pause_wait() {
 
 log_sep
 log "daemon start pid=$$ dry_run=$DRY_RUN root=$ROOT"
+# Dirty worker worktrees are kept as evidence but previously accumulated in
+# silence; name them at every start so they get inspected and removed.
+if [ -d "$WORKTREES" ] && [ -n "$(ls "$WORKTREES" 2>/dev/null)" ]; then
+  log "note: leftover worker worktree(s) kept dirty, inspect and remove: $(ls "$WORKTREES" | tr '\n' ' ')"
+fi
 write_status starting
 touch "$HEARTBEAT"
 while :; do
@@ -251,15 +286,27 @@ while :; do
   # Sessions must commit and push; codex's workspace-write sandbox blocks
   # .git writes (verified 2026-07-29: "cannot create .git/index.lock"), so
   # phases run unsandboxed — the same trust the Codex app automations had.
+  guard_ok=1
   case $guard_out in
-    *"NOTHING TO DO"*) : ;;
-    *"ACTION NEEDED"*) run_phase orchestrator -C "$ROOT" \
-         -s danger-full-access \
-         -c model_reasoning_effort=high \
-         "Use the orchestrator-run skill." \
-         || { rc=$?; log "warn: orchestrator phase rc!=0"; \
-              notify "phase orchestrator failed (rc=$rc) — see logs/pipeline"; } ;;
-    *) log "warn: guard output unrecognized — standing down" ;;
+    *"NOTHING TO DO"*) [ -n "$new_queue" ] || QUEUE="" ;;
+    *"ACTION NEEDED"*)
+      if run_phase orchestrator -C "$ROOT" \
+           -s danger-full-access \
+           -c model_reasoning_effort=high \
+           "Use the orchestrator-run skill."; then
+        CONSEC_FAILS=0
+      else
+        rc=$?
+        CONSEC_FAILS=$(( CONSEC_FAILS + 1 ))
+        log "warn: orchestrator phase rc!=0"
+        notify "phase orchestrator failed (rc=$rc) — see logs/pipeline"
+        failure_breaker
+      fi ;;
+    # A guard that prints neither verdict is broken or missing — stand down
+    # the whole cycle, worker included; full-access sessions must not run on
+    # an unverdicted repo.
+    *) guard_ok=0
+       log "warn: guard output unrecognized — standing down for this cycle" ;;
   esac
 
   pause_wait
@@ -268,7 +315,7 @@ while :; do
   # long-lived local modifications — so each worker phase gets a fresh
   # detached worktree of origin/main, matching the old Codex-app pattern.
   # The session pushes to origin itself; the worktree is removed when clean.
-  if worker_has_work; then
+  if [ "$guard_ok" = 1 ] && worker_has_work; then
     if [ "$DRY_RUN" = 1 ]; then
       run_phase worker -C "$ROOT" -s danger-full-access \
         "Use the worker-run skill."
@@ -276,10 +323,16 @@ while :; do
       mkdir -p "$WORKTREES"
       wt="$WORKTREES/w$(date -u +%Y%m%d%H%M%S)"
       if git -C "$ROOT" worktree add --detach "$wt" origin/main >/dev/null 2>&1; then
-        run_phase worker -C "$wt" -s danger-full-access \
-          "Use the worker-run skill." \
-          || { rc=$?; log "warn: worker phase rc!=0"; \
-               notify "phase worker failed (rc=$rc) — see logs/pipeline"; }
+        if run_phase worker -C "$wt" -s danger-full-access \
+          "Use the worker-run skill."; then
+          CONSEC_FAILS=0
+        else
+          rc=$?
+          CONSEC_FAILS=$(( CONSEC_FAILS + 1 ))
+          log "warn: worker phase rc!=0"
+          notify "phase worker failed (rc=$rc) — see logs/pipeline"
+          failure_breaker
+        fi
         if [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
           git -C "$ROOT" worktree remove "$wt" >/dev/null 2>&1 \
             || log "warn: could not remove worker worktree $wt"
