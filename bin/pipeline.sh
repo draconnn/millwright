@@ -316,15 +316,18 @@ while :; do
   # detached worktree of origin/main, matching the old Codex-app pattern.
   # The session pushes to origin itself; the worktree is removed when clean.
   if [ "$guard_ok" = 1 ] && worker_has_work; then
+    # The deadline goes into the prompt text: a 2026-08-03 worker never ran
+    # `date` and ground one task for 6+ hours past its 59-minute box.
+    worker_prompt="Use the worker-run skill. Wall-clock deadline: $(date -v +59M '+%H:%M') local time — hard stop per the skill's time-box rules."
     if [ "$DRY_RUN" = 1 ]; then
       run_phase worker -C "$ROOT" -s danger-full-access \
-        "Use the worker-run skill."
+        "$worker_prompt"
     else
       mkdir -p "$WORKTREES"
       wt="$WORKTREES/w$(date -u +%Y%m%d%H%M%S)"
       if git -C "$ROOT" worktree add --detach "$wt" origin/main >/dev/null 2>&1; then
         if run_phase worker -C "$wt" -s danger-full-access \
-          "Use the worker-run skill."; then
+          "$worker_prompt"; then
           CONSEC_FAILS=0
         else
           rc=$?
