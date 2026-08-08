@@ -1,6 +1,6 @@
 #!/bin/sh
 # pipeline.sh — general two-agent pipeline daemon (canonical copy:
-# ~/.ww-pipeline/bin/pipeline.sh). Chains fresh `codex exec` sessions
+# ~/.ww-pipeline/bin/pipeline.sh). Chains fresh agent sessions
 # (orchestrator -> worker) in a loop while origin/main advances; sleeps
 # IDLE_SLEEP_MIN minutes after a cycle that moved nothing. Designed to run
 # under launchd with KeepAlive; safe to run manually — a second instance
@@ -15,8 +15,11 @@
 # Controls (all under <repo>/logs/pipeline/):
 #   PAUSE  — pause between phases (menu bar toggles this)
 #   POKE   — cut the current idle sleep short
-#   WW_PIPELINE_DRY_RUN=1 — one cycle, print decisions, no codex sessions
-# Origin spec: worldwright docs/superpowers/specs/2026-07-29-unified-pipeline-wrapper-design.md
+#   MODEL  — "<engine>:<model-id>" from ~/.ww-pipeline/models.conf, chosen in
+#            the menu bar's Model submenu. Re-read at the start of every phase,
+#            so switching needs no restart; absent = `codex exec` on the
+#            ~/.codex/config.toml default.
+#   WW_PIPELINE_DRY_RUN=1 — one cycle, print decisions, no agent sessions
 
 set -u
 
@@ -35,7 +38,11 @@ POKE_FLAG="$PIPE_DIR/POKE"
 IDLE_SLEEP_MIN=${WW_PIPELINE_IDLE_SLEEP_MIN:-30}
 DRY_RUN=${WW_PIPELINE_DRY_RUN:-0}
 CODEX=${WW_PIPELINE_CODEX:-codex}
+CLAUDE=${WW_PIPELINE_CLAUDE:-claude}
 WORKTREES="$HOME/.ww-pipeline/worktrees/$PROJECT"
+MODEL_FLAG="$PIPE_DIR/MODEL"
+ENGINE=codex
+MODEL_ID=""
 
 # Dry runs must never clobber the live daemon's status surface (a dry run
 # during a live phase once painted the menu bar dead) — isolate their state.
@@ -143,17 +150,33 @@ on_exit() {
 trap on_exit EXIT
 trap 'exit 129' INT TERM HUP
 
-run_phase() { # $1 = phase name; remaining args passed to `codex exec`
-  phase=$1; shift
-  # The prompt is the last codex argument; flags are constant noise in a log.
-  for _a in "$@"; do prompt=$_a; done
+# Resolve which CLI and model the next phase runs on. Read fresh every phase so
+# a menu-bar switch lands without restarting the daemon (a restart would have to
+# kill a live session). Anything unrecognized falls back to the historical
+# behaviour rather than guessing an engine — the value picks a binary to exec.
+read_model() {
+  ENGINE=codex
+  MODEL_ID=""
+  [ -f "$MODEL_FLAG" ] || return 0
+  sel=$(head -1 "$MODEL_FLAG" 2>/dev/null | tr -d '[:space:]')
+  case $sel in
+    claude:?*) ENGINE=claude; MODEL_ID=${sel#claude:} ;;
+    codex:?*)  ENGINE=codex;  MODEL_ID=${sel#codex:} ;;
+    ''|codex:|claude:) ;;
+    *) log "warn: unrecognized MODEL '$sel' — using the codex default" ;;
+  esac
+}
+
+run_phase() { # $1 = phase, $2 = workdir, $3 = reasoning effort ("-" = none), $4 = prompt
+  phase=$1; workdir=$2; effort=$3; prompt=$4
+  read_model
   PHASE_STARTED=$(date -u +%FT%TZ)
   phase_epoch=$(date +%s)
   write_status "$phase"
-  log "$phase: start — \"$prompt\""
+  log "$phase: start [$ENGINE ${MODEL_ID:-default}] — \"$prompt\""
   if [ "$DRY_RUN" = 1 ]; then
     log "$phase: DRY RUN — prompt: \"$prompt\""
-    echo "DRY RUN [$phase]: codex exec $*"
+    echo "DRY RUN [$phase]: $ENGINE ${MODEL_ID:-default} in $workdir"
     PHASE_STARTED=""
     return 0
   fi
@@ -164,8 +187,29 @@ run_phase() { # $1 = phase name; remaining args passed to `codex exec`
   # log — appending them once grew a day log to 7.5MB and froze editors.
   mkdir -p "$PIPE_DIR/sessions"
   out="$PIPE_DIR/sessions/$(date -u +%Y%m%dT%H%M%SZ)-$phase.out"
-  "$CODEX" exec -o "$out.last" "$@" > "$out.raw" 2>&1
-  rc=$?
+  claude_sid=""
+  if [ "$ENGINE" = claude ]; then
+    # `claude -p` has no -C: it takes the working directory from the process,
+    # hence the subshell cd. We mint the session id ourselves so the menu bar
+    # can offer an exact `claude --resume` instead of scraping the transcript.
+    claude_sid=$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z')
+    set -- -p "$prompt" --permission-mode bypassPermissions --output-format text
+    [ -n "$MODEL_ID" ] && set -- "$@" --model "$MODEL_ID"
+    [ -n "$claude_sid" ] && set -- "$@" --session-id "$claude_sid"
+    # Both CLIs take the same effort vocabulary (low|medium|high|xhigh|max), so
+    # the orchestrator's "high" carries across engines instead of being dropped.
+    [ "$effort" = "-" ] || set -- "$@" --effort "$effort"
+    ( cd "$workdir" && exec "$CLAUDE" "$@" ) > "$out.raw" 2>&1
+    rc=$?
+    # -p prints only the closing message, so the capture already is the closer.
+    cp "$out.raw" "$out.last" 2>/dev/null || true
+  else
+    set -- -C "$workdir" -s danger-full-access
+    [ "$effort" = "-" ] || set -- "$@" -c "model_reasoning_effort=$effort"
+    [ -n "$MODEL_ID" ] && set -- "$@" -c "model=$MODEL_ID"
+    "$CODEX" exec -o "$out.last" "$@" "$prompt" > "$out.raw" 2>&1
+    rc=$?
+  fi
   kill "$hb" 2>/dev/null
   wait "$hb" 2>/dev/null || true
   # Keep captures readable: the transcript quotes every command's full
@@ -186,11 +230,17 @@ run_phase() { # $1 = phase name; remaining args passed to `codex exec`
     { printf -- '--- %s session tail (rc=%s) ---\n' "$phase" "$rc"
       tail -40 "$out"; } >> "$(logfile)"
   fi
-  sid=$(grep -m1 -iE 'session[ _]?id' "$out" \
-        | grep -oE '[0-9a-f]{8}-[0-9a-f-]{27,}' | head -1 || true)
+  if [ "$ENGINE" = claude ]; then
+    sid=$claude_sid
+  else
+    sid=$(grep -m1 -iE 'session[ _]?id' "$out" \
+          | grep -oE '[0-9a-f]{8}-[0-9a-f-]{27,}' | head -1 || true)
+  fi
+  # The engine is stored with the id so the menu bar knows whether to offer
+  # `codex resume` or `claude --resume` for this session.
   case $phase in
-    worker) LAST_WORKER_SESSION="${sid:-unknown} @ $PHASE_STARTED" ;;
-    orchestrator) LAST_ORCH_SESSION="${sid:-unknown} @ $PHASE_STARTED" ;;
+    worker) LAST_WORKER_SESSION="$ENGINE:${sid:-unknown} @ $PHASE_STARTED" ;;
+    orchestrator) LAST_ORCH_SESSION="$ENGINE:${sid:-unknown} @ $PHASE_STARTED" ;;
   esac
   PHASE_STARTED=""
   LAST_PHASE="$phase rc=$rc at $(date -u +%FT%TZ)"
@@ -286,13 +336,12 @@ while :; do
   # Sessions must commit and push; codex's workspace-write sandbox blocks
   # .git writes (verified 2026-07-29: "cannot create .git/index.lock"), so
   # phases run unsandboxed — the same trust the Codex app automations had.
+  # The claude engine gets the equivalent via --permission-mode bypassPermissions.
   guard_ok=1
   case $guard_out in
     *"NOTHING TO DO"*) [ -n "$new_queue" ] || QUEUE="" ;;
     *"ACTION NEEDED"*)
-      if run_phase orchestrator -C "$ROOT" \
-           -s danger-full-access \
-           -c model_reasoning_effort=high \
+      if run_phase orchestrator "$ROOT" high \
            "Use the orchestrator-run skill."; then
         CONSEC_FAILS=0
       else
@@ -320,14 +369,12 @@ while :; do
     # `date` and ground one task for 6+ hours past its 59-minute box.
     worker_prompt="Use the worker-run skill. Wall-clock deadline: $(date -v +59M '+%H:%M') local time — hard stop per the skill's time-box rules."
     if [ "$DRY_RUN" = 1 ]; then
-      run_phase worker -C "$ROOT" -s danger-full-access \
-        "$worker_prompt"
+      run_phase worker "$ROOT" - "$worker_prompt"
     else
       mkdir -p "$WORKTREES"
       wt="$WORKTREES/w$(date -u +%Y%m%d%H%M%S)"
       if git -C "$ROOT" worktree add --detach "$wt" origin/main >/dev/null 2>&1; then
-        if run_phase worker -C "$wt" -s danger-full-access \
-          "$worker_prompt"; then
+        if run_phase worker "$wt" - "$worker_prompt"; then
           CONSEC_FAILS=0
         else
           rc=$?

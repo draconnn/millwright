@@ -2,8 +2,7 @@
 
 General daemon for the two-agent Codex pipelines (worker + orchestrator).
 One canonical copy serves every pipeline repo; per-project state lives in
-each repo's `logs/pipeline/`. Origin: the Worldwright unified-pipeline spec
-(`docs/superpowers/specs/2026-07-29-unified-pipeline-wrapper-design.md`).
+each repo's `logs/pipeline/`.
 
 ## Layout
 
@@ -21,8 +20,14 @@ each repo's `logs/pipeline/`. Origin: the Worldwright unified-pipeline spec
 - `bin/statusbar.30s.sh` — SwiftBar plugin; reads `projects.conf`, one
   menu bar glyph per project (🟢 working / ⏱ phase running >120 min,
   presumed hung / 🌙 sleeping / ⏸ paused / 🔴 dead-or-stalled /
-  ⚪ never run) with a dropdown section each (Pause / Run-now,
-  `codex resume` commands, latest log).
+  ⚪ never run) with a dropdown section each (Pause / Run-now, Model
+  picker, resume commands, latest log).
+- `models.conf` — the models offered in each project's Model submenu, one
+  `<engine>:<model-id> [label]` per line. `codex` entries run `codex exec`,
+  `claude` entries run `claude -p`.
+- `bin/set-model.sh <repo-root> <engine:model-id>` — writes the selection
+  the daemon reads. Refuses ids absent from `models.conf`, since the value
+  decides which binary gets executed.
 - `launchd/com.dracon.<project>.pipeline.plist` — one LaunchAgent per
   project (`KeepAlive`; restarts on crash).
 - `tests/test-pipeline.sh` — daemon contract tests against fixture repos
@@ -34,11 +39,13 @@ each repo's `logs/pipeline/`. Origin: the Worldwright unified-pipeline spec
 
 - `tools/orchestrator-guard.sh` printing `NOTHING TO DO` / `ACTION NEEDED`
   (optionally honoring a `NO VALUABLE WORK AVAILABLE` hold in the latest
-  ORCHESTRATOR-NOTES.md entry — port from worldwright's guard),
+  ORCHESTRATOR-NOTES.md entry),
 - `tools/worker-preflight.sh` / `tools/worker-lock.sh` (the worker lease),
 - `docs/superpowers/plans/*.md` with `- [ ]` task boxes as the queue,
 - `logs/` gitignored,
-- the shared `worker-run` / `orchestrator-run` Codex skills.
+- the shared `worker-run` / `orchestrator-run` skills, installed for every
+  engine you intend to select (`~/.codex/skills`, symlinked into
+  `~/.claude/skills`).
 
 ## Add a project
 
@@ -56,16 +63,33 @@ manual steps, in this order:
 
 `projects.conf` format: one `<repo-root> [bar-label]` per line; the label
 appears next to the project's glyph in the menu bar (default: first two
-letters of the repo name).
+letters of the repo name). The file is untracked (it holds local paths) —
+see `projects.conf.example`; `add-project.sh` creates it as needed.
 
 ## Operate
 
 - Pause/resume + run-now: menu bar dropdown (flag files
   `logs/pipeline/PAUSE` / `POKE` in the repo).
+- Model: menu bar dropdown → Model (flag file `logs/pipeline/MODEL`). The
+  daemon re-reads it at the start of every phase, so a switch needs no
+  restart and never disturbs a phase already running — it lands on the next
+  one. "Reset to codex default" deletes the flag, restoring `codex exec` on
+  whatever `~/.codex/config.toml` sets. The choice is per project and covers
+  both phases; both engines run unsandboxed (`-s danger-full-access` for
+  codex, `--permission-mode bypassPermissions` for claude) because the
+  sessions must commit and push. Switching engines only works because
+  `orchestrator-run` / `worker-run` are shared skills installed for both
+  CLIs (`~/.codex/skills`, symlinked into `~/.claude/skills`).
 - Stop/rollback: Pause first, wait for ⏸/🌙, then
   `launchctl bootout gui/$(id -u)/com.dracon.<project>.pipeline` —
-  a mid-phase kill murders a live codex session and can hold the worker
+  a mid-phase kill murders a live session and can hold the worker
   lease for up to 59 minutes.
+- After editing `bin/pipeline.sh`, restart each daemon — `/bin/sh` never
+  rereads its own script, so a daemon started before the edit keeps running
+  the old code indefinitely and silently ignores anything the change added.
+  Pause, wait for ⏸/🌙, then `kill <pid>`; `KeepAlive` relaunches it against
+  the new file within seconds. (Flag files like `PAUSE`/`POKE`/`MODEL` are
+  read at run time and never need this — only code changes do.)
 - Dry run: `WW_PIPELINE_DRY_RUN=1 sh bin/pipeline.sh <repo-root>` — one
   cycle's decisions, no sessions, state isolated to `status-dry.json`.
 - Full transcripts: `codex resume <session id>` (ids in the dropdown,

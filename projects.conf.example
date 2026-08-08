@@ -1,5 +1,8 @@
 # Pipeline projects — one per line: <repo-root> [bar-label]
 # The label shows next to the glyph in the menu bar; defaults to the first
 # two letters of the repo name. Read by bin/statusbar.30s.sh.
-/Users/dracon/projects/worldwright ww
-/Users/dracon/projects/ep-hero-rankings ep
+#
+# Copy to projects.conf (untracked) — or let bin/add-project.sh register
+# projects for you.
+#
+# /Users/you/projects/my-repo mr

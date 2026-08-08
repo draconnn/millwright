@@ -191,6 +191,133 @@ test_poke_cuts_idle_sleep() {
   kill_and_verify_gone "$pid"
 }
 
+set_model() { # <fixture root> <engine:id> — bypasses set-model.sh validation
+  mkdir -p "$1/logs/pipeline"
+  printf '%s\n' "$2" > "$1/logs/pipeline/MODEL"
+}
+
+test_set_model_validates_against_models_conf() {
+  make_fixture setmodel "NOTHING TO DO: stub hold. End the orchestrator run now." "$done_plan"
+  f="$tmp/setmodel/primary"
+  set +e
+  out=$(WW_PIPELINE_HOME="$infra_root" sh "$infra_root/bin/set-model.sh" \
+          "$f" "claude:not-a-real-model" 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" = 65 ] || {
+    echo "expected exit 65 for an unlisted model, got $rc: $out" >&2; exit 1
+  }
+  if [ -f "$f/logs/pipeline/MODEL" ]; then
+    echo "a rejected model must not be written to the flag file" >&2; exit 1
+  fi
+  WW_PIPELINE_HOME="$infra_root" sh "$infra_root/bin/set-model.sh" \
+    "$f" "claude:claude-opus-5" >/dev/null
+  got=$(cat "$f/logs/pipeline/MODEL")
+  [ "$got" = "claude:claude-opus-5" ] || {
+    echo "expected MODEL flag 'claude:claude-opus-5', got '$got'" >&2; exit 1
+  }
+}
+
+test_model_flag_switches_engine_in_dry_run() {
+  make_fixture claudedry "ACTION NEEDED (worker lease: none): - 1 commit(s) stub" "$open_plan"
+  f="$tmp/claudedry/primary"
+  set_model "$f" "claude:claude-opus-5"
+  out=$(WW_PIPELINE_DRY_RUN=1 daemon "$f")
+  case $out in
+    *"DRY RUN [orchestrator]: claude claude-opus-5"*) ;;
+    *) echo "expected claude engine in the orchestrator dry run, got: $out" >&2; exit 1 ;;
+  esac
+  case $out in
+    *"DRY RUN [worker]: claude claude-opus-5"*) ;;
+    *) echo "expected claude engine in the worker dry run, got: $out" >&2; exit 1 ;;
+  esac
+}
+
+test_unrecognized_model_falls_back_to_codex() {
+  make_fixture badmodel "ACTION NEEDED (worker lease: none): - 1 commit(s) stub" "$open_plan"
+  f="$tmp/badmodel/primary"
+  set_model "$f" "gibberish-with-no-engine"
+  out=$(WW_PIPELINE_DRY_RUN=1 daemon "$f")
+  case $out in
+    *"DRY RUN [orchestrator]: codex default"*) ;;
+    *) echo "expected fallback to the codex default, got: $out" >&2; exit 1 ;;
+  esac
+  grep -q 'unrecognized MODEL' "$f"/logs/pipeline/*.log || {
+    echo "expected an unrecognized-MODEL warning in the daemon log" >&2; exit 1
+  }
+}
+
+test_claude_engine_is_actually_executed() {
+  # The codex stub succeeds and the claude stub fails, so the breaker can only
+  # trip if the MODEL flag really routed the phase to claude. Were dispatch
+  # broken and codex still running, every phase would succeed and this test
+  # would time out instead of passing.
+  make_fixture claudeexec "ACTION NEEDED (worker lease: none): - 1 commit(s) stub" "$open_plan"
+  f="$tmp/claudeexec/primary"
+  set_model "$f" "claude:claude-opus-5"
+  ( cd "$f" && WW_PIPELINE_CODEX=/usr/bin/true WW_PIPELINE_CLAUDE=/usr/bin/false \
+      WW_PIPELINE_NOTIFY=0 WW_PIPELINE_FAIL_LIMIT=2 WW_PIPELINE_IDLE_SLEEP_MIN=1 \
+      sh "$infra_root/bin/pipeline.sh" "$f" ) &
+  pid=$(wait_for_daemon_pid "$f/logs/pipeline/status.json") || {
+    echo "daemon never wrote a pid to status.json" >&2; exit 1
+  }
+  n=0
+  while ! grep -q 'circuit breaker' "$f"/logs/pipeline/*.log 2>/dev/null; do
+    sleep 1; n=$(( n + 1 ))
+    [ "$n" -lt 30 ] || {
+      echo "claude engine never ran — breaker did not trip" >&2
+      kill_and_verify_gone "$pid"; exit 1
+    }
+  done
+  grep -q 'start \[claude claude-opus-5\]' "$f"/logs/pipeline/*.log || {
+    echo "phase log did not record the claude engine" >&2
+    kill_and_verify_gone "$pid"; exit 1
+  }
+  kill_and_verify_gone "$pid"
+}
+
+test_model_switch_applies_without_restart() {
+  # The whole point of the flag file: a live daemon must pick up a new model at
+  # the next phase. Both stubs succeed so the loop keeps cycling; done_plan
+  # keeps the worker (and its worktree) out of it, leaving orchestrator phases
+  # as the observable. Asserting the same pid logged both engines is what rules
+  # out "it only reads MODEL at startup".
+  make_fixture hotswap "ACTION NEEDED (worker lease: none): - 1 commit(s) stub" "$done_plan"
+  f="$tmp/hotswap/primary"
+  set_model "$f" "codex:gpt-5.5"
+  ( cd "$f" && WW_PIPELINE_CODEX=/usr/bin/true WW_PIPELINE_CLAUDE=/usr/bin/true \
+      WW_PIPELINE_NOTIFY=0 WW_PIPELINE_IDLE_SLEEP_MIN=1 \
+      sh "$infra_root/bin/pipeline.sh" "$f" ) &
+  pid=$(wait_for_daemon_pid "$f/logs/pipeline/status.json") || {
+    echo "daemon never wrote a pid to status.json" >&2; exit 1
+  }
+  n=0
+  while ! grep -q 'start \[codex gpt-5.5\]' "$f"/logs/pipeline/*.log 2>/dev/null; do
+    sleep 1; n=$(( n + 1 ))
+    [ "$n" -lt 20 ] || {
+      echo "daemon never ran a phase on the initial model" >&2
+      kill_and_verify_gone "$pid"; exit 1
+    }
+  done
+  # Swap the model under the running daemon — no signal, no restart.
+  set_model "$f" "claude:claude-opus-5"
+  touch "$f/logs/pipeline/POKE"
+  n=0
+  while ! grep -q 'start \[claude claude-opus-5\]' "$f"/logs/pipeline/*.log 2>/dev/null; do
+    sleep 1; n=$(( n + 1 ))
+    [ "$n" -lt 25 ] || {
+      echo "live daemon did not pick up the new model without a restart" >&2
+      kill_and_verify_gone "$pid"; exit 1
+    }
+  done
+  still=$(jq -r '.pid' "$f/logs/pipeline/status.json")
+  [ "$still" = "$pid" ] || {
+    echo "daemon restarted mid-test (pid $still, expected $pid) — proves nothing" >&2
+    kill_and_verify_gone "$pid"; exit 1
+  }
+  kill_and_verify_gone "$pid"
+}
+
 test_requires_repo_root
 test_dry_run_idle_cycle
 test_dry_run_active_cycle
@@ -198,4 +325,9 @@ test_fails_closed_on_garbled_guard
 test_single_instance_lock
 test_failure_breaker_auto_pauses
 test_poke_cuts_idle_sleep
+test_set_model_validates_against_models_conf
+test_model_flag_switches_engine_in_dry_run
+test_unrecognized_model_falls_back_to_codex
+test_claude_engine_is_actually_executed
+test_model_switch_applies_without_restart
 echo "pipeline infra tests ok"

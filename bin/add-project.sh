@@ -38,6 +38,7 @@ fi
 
 plist="$infra/launchd/com.dracon.$project.pipeline.plist"
 sed -e "s|@@ROOT@@|$root|g" -e "s|@@PROJECT@@|$project|g" \
+  -e "s|@@INFRA@@|$infra|g" \
   "$infra/launchd/template.plist" > "$plist"
 plutil -lint "$plist" >/dev/null
 

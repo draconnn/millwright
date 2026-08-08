@@ -8,7 +8,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string>
-    <string>/Users/dracon/.ww-pipeline/bin/pipeline.sh</string>
+    <string>@@INFRA@@/bin/pipeline.sh</string>
     <string>@@ROOT@@</string>
   </array>
   <key>WorkingDirectory</key>
