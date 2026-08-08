@@ -1,8 +1,9 @@
-# ww-pipeline
+# millwright
 
-General daemon for the two-agent Codex pipelines (worker + orchestrator).
+General daemon for two-agent coding pipelines (worker + orchestrator).
 One canonical copy serves every pipeline repo; per-project state lives in
-each repo's `logs/pipeline/`.
+each repo's `logs/pipeline/`. Clone to `~/.ww-pipeline` — the scripts
+resolve their worktrees and config files at that path.
 
 ## Layout
 
