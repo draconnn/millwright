@@ -6,11 +6,11 @@
 # submenu in bin/statusbar.30s.sh; safe to run by hand.
 #
 # The value picks which CLI the daemon executes, so it is validated against
-# ~/.ww-pipeline/models.conf and never taken on trust.
+# the checkout's models.conf and never taken on trust.
 
 set -u
 
-INFRA=${WW_PIPELINE_HOME:-$HOME/.ww-pipeline}
+INFRA=${WW_PIPELINE_HOME:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}
 MODELS_CONF="$INFRA/models.conf"
 
 [ $# -eq 2 ] || {

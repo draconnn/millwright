@@ -2,8 +2,8 @@
 
 General daemon for two-agent coding pipelines (worker + orchestrator).
 One canonical copy serves every pipeline repo; per-project state lives in
-each repo's `logs/pipeline/`. Clone to `~/.ww-pipeline` — the scripts
-resolve their worktrees and config files at that path.
+each repo's `logs/pipeline/`. Clone anywhere — the scripts resolve their
+own checkout location (symlinks included; `WW_PIPELINE_HOME` overrides).
 
 ## Layout
 

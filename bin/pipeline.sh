@@ -1,6 +1,5 @@
 #!/bin/sh
-# pipeline.sh — general two-agent pipeline daemon (canonical copy:
-# ~/.ww-pipeline/bin/pipeline.sh). Chains fresh agent sessions
+# pipeline.sh — general two-agent pipeline daemon. Chains fresh agent sessions
 # (orchestrator -> worker) in a loop while origin/main advances; sleeps
 # IDLE_SLEEP_MIN minutes after a cycle that moved nothing. Designed to run
 # under launchd with KeepAlive; safe to run manually — a second instance
@@ -15,7 +14,7 @@
 # Controls (all under <repo>/logs/pipeline/):
 #   PAUSE  — pause between phases (menu bar toggles this)
 #   POKE   — cut the current idle sleep short
-#   MODEL  — "<engine>:<model-id>" from ~/.ww-pipeline/models.conf, chosen in
+#   MODEL  — "<engine>:<model-id>" from the checkout's models.conf, chosen in
 #            the menu bar's Model submenu. Re-read at the start of every phase,
 #            so switching needs no restart; absent = `codex exec` on the
 #            ~/.codex/config.toml default.
@@ -39,7 +38,11 @@ IDLE_SLEEP_MIN=${WW_PIPELINE_IDLE_SLEEP_MIN:-30}
 DRY_RUN=${WW_PIPELINE_DRY_RUN:-0}
 CODEX=${WW_PIPELINE_CODEX:-codex}
 CLAUDE=${WW_PIPELINE_CLAUDE:-claude}
-WORKTREES="$HOME/.ww-pipeline/worktrees/$PROJECT"
+# The checkout's own location; resolved through symlinks so it holds wherever
+# the repo was cloned. WW_PIPELINE_HOME overrides (already the set-model.sh
+# contract).
+INFRA=${WW_PIPELINE_HOME:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}
+WORKTREES="$INFRA/worktrees/$PROJECT"
 MODEL_FLAG="$PIPE_DIR/MODEL"
 ENGINE=codex
 MODEL_ID=""

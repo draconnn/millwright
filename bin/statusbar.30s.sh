@@ -1,16 +1,18 @@
 #!/bin/sh
-# SwiftBar plugin for the two-agent pipeline daemons (canonical copy:
-# ~/.ww-pipeline/bin/statusbar.30s.sh). Reads ~/.ww-pipeline/projects.conf
-# (one "<repo-root> [bar-label]" per line, # comments allowed) and renders
-# one "<glyph><label>" per project in the menu bar plus a dropdown section
-# each. Install by symlinking into the SwiftBar plugins folder; ".30s" is
-# the refresh interval.
+# SwiftBar plugin for the two-agent pipeline daemons. Reads the checkout's
+# projects.conf (one "<repo-root> [bar-label]" per line, # comments allowed)
+# and renders one "<glyph><label>" per project in the menu bar plus a
+# dropdown section each. Install by symlinking into the SwiftBar plugins
+# folder; ".30s" is the refresh interval.
 # <swiftbar.hideAbout>true</swiftbar.hideAbout>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
 
-CONF="$HOME/.ww-pipeline/projects.conf"
-MODELS_CONF="$HOME/.ww-pipeline/models.conf"
-SETMODEL="$HOME/.ww-pipeline/bin/set-model.sh"
+# SwiftBar runs this through its plugins-folder symlink, so $0 must be
+# resolved through readlink before it locates the checkout.
+INFRA=${WW_PIPELINE_HOME:-$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)}
+CONF="$INFRA/projects.conf"
+MODELS_CONF="$INFRA/models.conf"
+SETMODEL="$INFRA/bin/set-model.sh"
 TAB=$(printf '\t')
 
 # The selectable models, one "<engine:id><TAB><label>" per line. Read once —
