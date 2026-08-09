@@ -121,7 +121,18 @@ print_task_menu() {
   [ "$state" = worker ] && mark_next=1
   for plan in "$plans"/*.md; do
     [ -f "$plan" ] || continue
-    tasks=$(grep '^- \[ \]' "$plan" 2>/dev/null | sed 's/^- \[ \] //')
+    # A box whose text is just the tick-off marker ("**Task N complete**",
+    # worldwright's convention) is labeled by its "### Task N: ..." heading
+    # instead; boxes that carry a real description (ep-hero's convention)
+    # print as-is.
+    tasks=$(awk '
+      /^### / { h = substr($0, 5) }
+      /^- \[ \] / {
+        t = substr($0, 7)
+        if (t ~ /^\**Task [0-9]+ complete\**$/ && h != "") t = h
+        print t
+      }
+    ' "$plan" 2>/dev/null)
     [ -n "$tasks" ] || continue
     n=$(printf '%s\n' "$tasks" | grep -c .)
     total=$(( total + n ))
