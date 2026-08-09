@@ -106,6 +106,56 @@ fmt_session() { # "engine:id @ ts" -> the engine's resume command; passthrough o
   esac
 }
 
+# print_task_menu <root> — "Tasks:" parent line plus one submenu row per
+# unchecked "- [ ]" box in the plan queue, grouped under their plan file.
+# While a worker phase runs ($state from inspect), the first unchecked task
+# in plan order gets the ▶ marker: boxes are only ticked when a task lands
+# on origin/main, so the first open one is the task being worked right now.
+# Reads the primary checkout, which the workers fast-forward after each task.
+print_task_menu() {
+  plans="$1/docs/superpowers/plans"
+  [ -d "$plans" ] || return 0
+  total=0
+  rows=""
+  mark_next=0
+  [ "$state" = worker ] && mark_next=1
+  for plan in "$plans"/*.md; do
+    [ -f "$plan" ] || continue
+    tasks=$(grep '^- \[ \]' "$plan" 2>/dev/null | sed 's/^- \[ \] //')
+    [ -n "$tasks" ] || continue
+    n=$(printf '%s\n' "$tasks" | grep -c .)
+    total=$(( total + n ))
+    rows="$rows--$(basename "$plan" .md)
+"
+    while IFS= read -r t; do
+      # "|" is SwiftBar's field separator; keep it out of the row text.
+      # "**" is markdown bold — noise in a menu.
+      t=$(printf '%s' "$t" | tr '|' '/' | sed 's/\*\*//g' | cut -c1-80)
+      if [ "$mark_next" = 1 ]; then
+        rows="$rows--▶ $t
+"
+        mark_next=0
+      else
+        rows="$rows--· $t
+"
+      fi
+    done <<TASKS
+$(printf '%s\n' "$tasks" | head -10)
+TASKS
+    [ "$n" -gt 10 ] && rows="$rows--… $(( n - 10 )) more
+"
+  done
+  if [ "$total" = 0 ]; then
+    echo "Tasks: none queued"
+  elif [ "$state" = worker ]; then
+    echo "Tasks: $total open, ▶ in progress"
+    printf '%s' "$rows"
+  else
+    echo "Tasks: $total queued"
+    printf '%s' "$rows"
+  fi
+}
+
 conf_lines=""
 if [ -f "$CONF" ]; then
   conf_lines=$(grep -v '^[[:space:]]*#' "$CONF" | grep -v '^[[:space:]]*$')
@@ -149,6 +199,7 @@ while IFS= read -r line; do
   [ -n "$last_phase" ] && echo "last phase: $last_phase"
   [ -n "$last_exit" ] && echo "last exit: $last_exit"
   [ -n "$queue" ] && echo "queue: $queue"
+  print_task_menu "$proj_root"
   echo "model: $model_label"
   echo "worker: $(fmt_session "$wsess")"
   echo "orchestrator: $(fmt_session "$osess")"
