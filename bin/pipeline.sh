@@ -372,12 +372,12 @@ while :; do
     # `date` and ground one task for 6+ hours past its 59-minute box.
     worker_prompt="Use the worker-run skill. Wall-clock deadline: $(date -v +59M '+%H:%M') local time — hard stop per the skill's time-box rules."
     if [ "$DRY_RUN" = 1 ]; then
-      run_phase worker "$ROOT" - "$worker_prompt"
+      run_phase worker "$ROOT" high "$worker_prompt"
     else
       mkdir -p "$WORKTREES"
       wt="$WORKTREES/w$(date -u +%Y%m%d%H%M%S)"
       if git -C "$ROOT" worktree add --detach "$wt" origin/main >/dev/null 2>&1; then
-        if run_phase worker "$wt" - "$worker_prompt"; then
+        if run_phase worker "$wt" high "$worker_prompt"; then
           CONSEC_FAILS=0
         else
           rc=$?
